@@ -112,6 +112,23 @@ func TestReconcileDeploymentUpdatesBuiltInEnvVars(t *testing.T) {
 	assertSecretRef(t, containerEnv, "WORDPRESS_DB_PASSWORD", "new-secret", "databasePassword")
 }
 
+func TestUpdateEnvVarsSkipsManagedEnvVars(t *testing.T) {
+	env := []corev1.EnvVar{
+		{Name: "WORDPRESS_DB_HOST", ValueFrom: secretKeyEnv("db-secret", "databaseHost")},
+	}
+
+	changed := updateEnvVars(&env, []crmv1.EnvVar{
+		{Name: "WORDPRESS_DB_HOST", Value: "override.example.com"},
+		{Name: "CUSTOM_SETTING", Value: "enabled"},
+	})
+
+	if !changed {
+		t.Fatal("updateEnvVars did not report adding custom env var")
+	}
+	assertSecretRef(t, env, "WORDPRESS_DB_HOST", "db-secret", "databaseHost")
+	assertEnvValue(t, env, "CUSTOM_SETTING", "enabled")
+}
+
 func assertEnvValue(t *testing.T, env []corev1.EnvVar, name, expected string) {
 	t.Helper()
 	for _, item := range env {
