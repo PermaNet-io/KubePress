@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"os"
+	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -190,18 +191,7 @@ fi
 chown -R 33:33 /var/www/html
 `},
 			VolumeMounts: volumeMounts, // share volumes with main container if needed
-			Env: []corev1.EnvVar{
-				{Name: "WORDPRESS_DB_HOST", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: mySQLSecretName}, Key: "databaseHost"}}},
-				{Name: "WORDPRESS_DB_NAME", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: mySQLSecretName}, Key: "database"}}},
-				{Name: "WORDPRESS_DB_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: mySQLSecretName}, Key: "databaseUsername"}}},
-				{Name: "WORDPRESS_DB_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: mySQLSecretName}, Key: "databasePassword"}}},
-				{Name: "WORDPRESS_URL", Value: getSiteUrl(wp)},
-				{Name: "WORDPRESS_TITLE", Value: wp.Spec.SiteTitle},
-				{Name: "WORDPRESS_ADMIN_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: mySQLSecretName}, Key: "username"}}},
-				{Name: "WORDPRESS_ADMIN_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: mySQLSecretName}, Key: "password"}}},
-				{Name: "WORDPRESS_ADMIN_EMAIL", Value: wp.Spec.AdminEmail},
-				{Name: "WORDPRESS_MEMORY_LIMIT", Value: memoryLimit},
-			},
+			Env:          desiredInitEnvVars(wp, mySQLSecretName, memoryLimit),
 		}
 		initContainer.Env = append(initContainer.Env, toCoreEnvVars(wp.Spec.WordPress.Env)...)
 
@@ -241,23 +231,7 @@ chown -R 33:33 /var/www/html
 					//		Add:  []corev1.Capability{"CHOWN", "SETUID", "SETGID"}, // Minimal capabilities
 					//	},
 					//},
-					Env: []corev1.EnvVar{
-						{
-							Name:      "WORDPRESS_DB_HOST",
-							ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: mySQLSecretName}, Key: "databaseHost"}},
-						},
-						{
-							Name:      "WORDPRESS_DB_NAME",
-							ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: mySQLSecretName}, Key: "database"}},
-						},
-						{
-							Name:      "WORDPRESS_DB_USER",
-							ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: mySQLSecretName}, Key: "databaseUsername"}},
-						},
-						{
-							Name:      "WORDPRESS_DB_PASSWORD",
-							ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: mySQLSecretName}, Key: "databasePassword"}},
-						},
+					Env: append(desiredWordPressContainerEnvVars(mySQLSecretName), []corev1.EnvVar{
 						{
 							Name:  "WORDPRESS_TABLE_PREFIX",
 							Value: "wp_",
@@ -270,7 +244,7 @@ chown -R 33:33 /var/www/html
 							Name:  "APACHE_RUN_GROUP",
 							Value: "www-data",
 						},
-					},
+					}...),
 					Ports: []corev1.ContainerPort{
 						{
 							Name:          "http",
@@ -278,7 +252,7 @@ chown -R 33:33 /var/www/html
 						},
 					},
 					VolumeMounts: volumeMounts,
-					Resources: buildWordPressResources(wp),
+					Resources:    buildWordPressResources(wp),
 				},
 			},
 			Volumes: volumes,
@@ -355,6 +329,13 @@ chown -R 33:33 /var/www/html
 			}
 		}
 
+		mySQLSecretName := wp.Spec.AdminUserSecretKeyRef
+		for _, envVar := range desiredWordPressContainerEnvVars(mySQLSecretName) {
+			if upsertEnvVar(&deployment.Spec.Template.Spec.Containers[0].Env, envVar) {
+				updateNeeded = true
+			}
+		}
+
 		if imagePullSecret := resolveImagePullSecret(wp); imagePullSecret != "" && !imagePullSecretsEqual(deployment.Spec.Template.Spec.ImagePullSecrets, imagePullSecret) {
 			deployment.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: imagePullSecret}}
 			updateNeeded = true
@@ -380,26 +361,12 @@ chown -R 33:33 /var/www/html
 			return err
 		}
 
-		// check if init container has the correct memory limit env var
-		if len(deployment.Spec.Template.Spec.InitContainers) > 0 && deployment.Spec.Template.Spec.InitContainers[0].Env != nil {
-			for i, env := range deployment.Spec.Template.Spec.InitContainers[0].Env {
-				if env.Name == "WORDPRESS_MEMORY_LIMIT" {
-					if env.Value != memoryLimit {
-						deployment.Spec.Template.Spec.InitContainers[0].Env[i].Value = memoryLimit
-						updateNeeded = true
-					}
-					break
+		if len(deployment.Spec.Template.Spec.InitContainers) > 0 {
+			for _, envVar := range desiredInitEnvVars(wp, mySQLSecretName, memoryLimit) {
+				if upsertEnvVar(&deployment.Spec.Template.Spec.InitContainers[0].Env, envVar) {
+					updateNeeded = true
 				}
 			}
-		} else if len(deployment.Spec.Template.Spec.InitContainers) > 0 {
-			// add the env var
-			deployment.Spec.Template.Spec.InitContainers[0].Env = []corev1.EnvVar{
-				{
-					Name:  "WORDPRESS_MEMORY_LIMIT",
-					Value: memoryLimit,
-				},
-			}
-			updateNeeded = true
 		}
 
 		// Update the deployment if needed
@@ -413,6 +380,35 @@ chown -R 33:33 /var/www/html
 	}
 
 	return nil
+}
+
+func desiredWordPressContainerEnvVars(secretName string) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "WORDPRESS_DB_HOST", ValueFrom: secretKeyEnv(secretName, "databaseHost")},
+		{Name: "WORDPRESS_DB_NAME", ValueFrom: secretKeyEnv(secretName, "database")},
+		{Name: "WORDPRESS_DB_USER", ValueFrom: secretKeyEnv(secretName, "databaseUsername")},
+		{Name: "WORDPRESS_DB_PASSWORD", ValueFrom: secretKeyEnv(secretName, "databasePassword")},
+	}
+}
+
+func desiredInitEnvVars(wp *crmv1.WordPressSite, secretName, memoryLimit string) []corev1.EnvVar {
+	return append(desiredWordPressContainerEnvVars(secretName), []corev1.EnvVar{
+		{Name: "WORDPRESS_URL", Value: getSiteUrl(wp)},
+		{Name: "WORDPRESS_TITLE", Value: wp.Spec.SiteTitle},
+		{Name: "WORDPRESS_ADMIN_USER", ValueFrom: secretKeyEnv(secretName, "username")},
+		{Name: "WORDPRESS_ADMIN_PASSWORD", ValueFrom: secretKeyEnv(secretName, "password")},
+		{Name: "WORDPRESS_ADMIN_EMAIL", Value: wp.Spec.AdminEmail},
+		{Name: "WORDPRESS_MEMORY_LIMIT", Value: memoryLimit},
+	}...)
+}
+
+func secretKeyEnv(secretName, key string) *corev1.EnvVarSource {
+	return &corev1.EnvVarSource{
+		SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+			Key:                  key,
+		},
+	}
 }
 
 func buildWordPressResources(wp *crmv1.WordPressSite) corev1.ResourceRequirements {
@@ -509,6 +505,22 @@ func updateEnvVars(containerEnv *[]corev1.EnvVar, envVars []crmv1.EnvVar, logger
 	}
 
 	return changed
+}
+
+func upsertEnvVar(containerEnv *[]corev1.EnvVar, desired corev1.EnvVar) bool {
+	for i, env := range *containerEnv {
+		if env.Name != desired.Name {
+			continue
+		}
+		if reflect.DeepEqual(env, desired) {
+			return false
+		}
+		(*containerEnv)[i] = desired
+		return true
+	}
+
+	*containerEnv = append(*containerEnv, desired)
+	return true
 }
 
 // Helper functions to get values from the WordPress spec
