@@ -150,6 +150,9 @@ spec:
                                         default: wordpress:latest
                                         description: Image to use for the WordPress container
                                         type: string
+                                    imagePullSecret:
+                                        description: ImagePullSecret references an optional pull secret for private WordPress images
+                                        type: string
                                     maxUploadLimit:
                                         default: 64M
                                         description: MaxUploadLimit sets the maximum upload file size (e.g., "64M")

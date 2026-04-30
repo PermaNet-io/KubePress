@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"os"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -173,6 +174,18 @@ if ! /tmp/wp-cli core is-installed --path="/var/www/html/" --quiet 2>/dev/null; 
 		--allow-root
 fi
 
+if [ "${KUBEPRESS_SYNC_WP_CONTENT:-false}" = "true" ]; then
+	for subdir in themes plugins mu-plugins; do
+		src="/usr/src/wordpress/wp-content/${subdir}"
+		dst="/var/www/html/wp-content/${subdir}"
+		if [ -d "$src" ]; then
+			echo "Syncing ${subdir} from image into WordPress content volume..."
+			mkdir -p "$dst"
+			cp -a "$src/." "$dst/"
+		fi
+	done
+fi
+
 # Set proper ownership and permissions
 chown -R 33:33 /var/www/html
 `},
@@ -190,6 +203,7 @@ chown -R 33:33 /var/www/html
 				{Name: "WORDPRESS_MEMORY_LIMIT", Value: memoryLimit},
 			},
 		}
+		initContainer.Env = append(initContainer.Env, wp.Spec.WordPress.Env...)
 
 		// Create Pod specification
 		podSpec := corev1.PodSpec{
@@ -264,19 +278,14 @@ chown -R 33:33 /var/www/html
 						},
 					},
 					VolumeMounts: volumeMounts,
-					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(wp.Spec.WordPress.Resources.CPURequest),
-							corev1.ResourceMemory: resource.MustParse(wp.Spec.WordPress.Resources.MemoryRequest),
-						},
-						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(wp.Spec.WordPress.Resources.CPULimit),
-							corev1.ResourceMemory: resource.MustParse(wp.Spec.WordPress.Resources.MemoryLimit),
-						},
-					},
+					Resources: buildWordPressResources(wp),
 				},
 			},
 			Volumes: volumes,
+		}
+		podSpec.Containers[0].Env = append(podSpec.Containers[0].Env, wp.Spec.WordPress.Env...)
+		if imagePullSecret := resolveImagePullSecret(wp); imagePullSecret != "" {
+			podSpec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: imagePullSecret}}
 		}
 
 		// Create the deployment
@@ -323,6 +332,10 @@ chown -R 33:33 /var/www/html
 			deployment.Spec.Template.Spec.Containers[0].Image = wp.Spec.WordPress.Image
 			updateNeeded = true
 		}
+		if len(deployment.Spec.Template.Spec.InitContainers) > 0 && deployment.Spec.Template.Spec.InitContainers[0].Image != wp.Spec.WordPress.Image {
+			deployment.Spec.Template.Spec.InitContainers[0].Image = wp.Spec.WordPress.Image
+			updateNeeded = true
+		}
 
 		// Check if replicas need to be updated
 		if *deployment.Spec.Replicas != wp.Spec.WordPress.Replicas {
@@ -332,22 +345,28 @@ chown -R 33:33 /var/www/html
 
 		// Add environment variables handling
 		if len(wp.Spec.WordPress.Env) > 0 {
-			if envVarsChanged := updateEnvVars(deployment, wp.Spec.WordPress.Env, logger); envVarsChanged {
+			if envVarsChanged := updateEnvVars(&deployment.Spec.Template.Spec.Containers[0].Env, wp.Spec.WordPress.Env, logger); envVarsChanged {
 				updateNeeded = true
+			}
+			if len(deployment.Spec.Template.Spec.InitContainers) > 0 {
+				if envVarsChanged := updateEnvVars(&deployment.Spec.Template.Spec.InitContainers[0].Env, wp.Spec.WordPress.Env, logger); envVarsChanged {
+					updateNeeded = true
+				}
 			}
 		}
 
-		// Check if resource requests/limits need to be updated
-		resources := corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse(wp.Spec.WordPress.Resources.CPURequest),
-				corev1.ResourceMemory: resource.MustParse(wp.Spec.WordPress.Resources.MemoryRequest),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse(wp.Spec.WordPress.Resources.CPULimit),
-				corev1.ResourceMemory: resource.MustParse(wp.Spec.WordPress.Resources.MemoryLimit),
-			},
+		if imagePullSecret := resolveImagePullSecret(wp); imagePullSecret != "" && !imagePullSecretsEqual(deployment.Spec.Template.Spec.ImagePullSecrets, imagePullSecret) {
+			deployment.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: imagePullSecret}}
+			updateNeeded = true
 		}
+
+		if imagePullSecret := resolveImagePullSecret(wp); imagePullSecret == "" && len(deployment.Spec.Template.Spec.ImagePullSecrets) > 0 {
+			deployment.Spec.Template.Spec.ImagePullSecrets = nil
+			updateNeeded = true
+		}
+
+		// Check if resource requests/limits need to be updated
+		resources := buildWordPressResources(wp)
 
 		if !resourcesEqual(deployment.Spec.Template.Spec.Containers[0].Resources, resources) {
 			deployment.Spec.Template.Spec.Containers[0].Resources = resources
@@ -362,7 +381,7 @@ chown -R 33:33 /var/www/html
 		}
 
 		// check if init container has the correct memory limit env var
-		if deployment.Spec.Template.Spec.InitContainers[0].Env != nil {
+		if len(deployment.Spec.Template.Spec.InitContainers) > 0 && deployment.Spec.Template.Spec.InitContainers[0].Env != nil {
 			for i, env := range deployment.Spec.Template.Spec.InitContainers[0].Env {
 				if env.Name == "WORDPRESS_MEMORY_LIMIT" {
 					if env.Value != memoryLimit {
@@ -372,7 +391,7 @@ chown -R 33:33 /var/www/html
 					break
 				}
 			}
-		} else {
+		} else if len(deployment.Spec.Template.Spec.InitContainers) > 0 {
 			// add the env var
 			deployment.Spec.Template.Spec.InitContainers[0].Env = []corev1.EnvVar{
 				{
@@ -396,6 +415,40 @@ chown -R 33:33 /var/www/html
 	return nil
 }
 
+func buildWordPressResources(wp *crmv1.WordPressSite) corev1.ResourceRequirements {
+	resources := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{},
+		Limits:   corev1.ResourceList{},
+	}
+
+	if wp.Spec.WordPress.Resources == nil {
+		return resources
+	}
+
+	if wp.Spec.WordPress.Resources.CPURequest != "" {
+		resources.Requests[corev1.ResourceCPU] = resource.MustParse(wp.Spec.WordPress.Resources.CPURequest)
+	}
+	if wp.Spec.WordPress.Resources.MemoryRequest != "" {
+		resources.Requests[corev1.ResourceMemory] = resource.MustParse(wp.Spec.WordPress.Resources.MemoryRequest)
+	}
+	if wp.Spec.WordPress.Resources.MemoryLimit != "" {
+		resources.Limits[corev1.ResourceMemory] = resource.MustParse(wp.Spec.WordPress.Resources.MemoryLimit)
+	}
+
+	return resources
+}
+
+func resolveImagePullSecret(wp *crmv1.WordPressSite) string {
+	if wp.Spec.WordPress.ImagePullSecret != "" {
+		return wp.Spec.WordPress.ImagePullSecret
+	}
+	return os.Getenv("WORDPRESS_IMAGE_PULL_SECRET")
+}
+
+func imagePullSecretsEqual(actual []corev1.LocalObjectReference, expected string) bool {
+	return len(actual) == 1 && actual[0].Name == expected
+}
+
 func resourcesEqual(requirements corev1.ResourceRequirements, actual corev1.ResourceRequirements) bool {
 	if len(requirements.Limits) != len(actual.Limits) || len(requirements.Requests) != len(actual.Requests) {
 		return false
@@ -417,28 +470,31 @@ func resourcesEqual(requirements corev1.ResourceRequirements, actual corev1.Reso
 
 }
 
-// updateEnvVars updates environment variables in a deployment
-func updateEnvVars(deployment *appsv1.Deployment, envVars []crmv1.EnvVar, logger logr.Logger) bool {
+// updateEnvVars updates environment variables in a container.
+func updateEnvVars(containerEnv *[]corev1.EnvVar, envVars []crmv1.EnvVar, logger logr.Logger) bool {
 	changed := false
-
-	// First, create a map of existing env vars to avoid duplicates
-	existingEnvVars := make(map[string]bool)
-	for _, env := range deployment.Spec.Template.Spec.Containers[0].Env {
-		existingEnvVars[env.Name] = true
+	existingEnvVars := make(map[string]int)
+	for i, env := range *containerEnv {
+		existingEnvVars[env.Name] = i
 	}
 
-	// Only add env vars that don't already exist
 	for _, env := range envVars {
-		if !existingEnvVars[env.Name] {
-			deployment.Spec.Template.Spec.Containers[0].Env = append(
-				deployment.Spec.Template.Spec.Containers[0].Env,
-				corev1.EnvVar{
-					Name:  env.Name,
-					Value: env.Value,
-				},
-			)
-			changed = true
+		if existingIndex, ok := existingEnvVars[env.Name]; ok {
+			if (*containerEnv)[existingIndex].Value != env.Value {
+				(*containerEnv)[existingIndex].Value = env.Value
+				changed = true
+			}
+			continue
 		}
+
+		*containerEnv = append(
+			*containerEnv,
+			corev1.EnvVar{
+				Name:  env.Name,
+				Value: env.Value,
+			},
+		)
+		changed = true
 	}
 
 	return changed
