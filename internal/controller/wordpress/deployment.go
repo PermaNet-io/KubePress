@@ -203,7 +203,7 @@ chown -R 33:33 /var/www/html
 				{Name: "WORDPRESS_MEMORY_LIMIT", Value: memoryLimit},
 			},
 		}
-		initContainer.Env = append(initContainer.Env, wp.Spec.WordPress.Env...)
+		initContainer.Env = append(initContainer.Env, toCoreEnvVars(wp.Spec.WordPress.Env)...)
 
 		// Create Pod specification
 		podSpec := corev1.PodSpec{
@@ -283,7 +283,7 @@ chown -R 33:33 /var/www/html
 			},
 			Volumes: volumes,
 		}
-		podSpec.Containers[0].Env = append(podSpec.Containers[0].Env, wp.Spec.WordPress.Env...)
+		podSpec.Containers[0].Env = append(podSpec.Containers[0].Env, toCoreEnvVars(wp.Spec.WordPress.Env)...)
 		if imagePullSecret := resolveImagePullSecret(wp); imagePullSecret != "" {
 			podSpec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: imagePullSecret}}
 		}
@@ -447,6 +447,17 @@ func resolveImagePullSecret(wp *crmv1.WordPressSite) string {
 
 func imagePullSecretsEqual(actual []corev1.LocalObjectReference, expected string) bool {
 	return len(actual) == 1 && actual[0].Name == expected
+}
+
+func toCoreEnvVars(envVars []crmv1.EnvVar) []corev1.EnvVar {
+	coreEnvVars := make([]corev1.EnvVar, 0, len(envVars))
+	for _, env := range envVars {
+		coreEnvVars = append(coreEnvVars, corev1.EnvVar{
+			Name:  env.Name,
+			Value: env.Value,
+		})
+	}
+	return coreEnvVars
 }
 
 func resourcesEqual(requirements corev1.ResourceRequirements, actual corev1.ResourceRequirements) bool {
