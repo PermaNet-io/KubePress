@@ -404,13 +404,16 @@ func (r *WordPressSiteReconciler) updateStatus(ctx context.Context, wp *crmv1.Wo
 
 	// Check if WordPress deployment is ready
 	status := StatusUnknown
+	notReadyMessage := "WordPress site readiness has not been determined"
 
 	// Find WordPress pod regardless of CLI setting
 	podList := &v1.PodList{}
 	labels := wordpress.GetWordpressLabelsForMatching(wp)
 	if err := r.List(ctx, podList, client.InNamespace(wp.Namespace), client.MatchingLabels(labels)); err == nil {
+		notReadyMessage = "WordPress pod not found"
 		for _, pod := range podList.Items {
 			if pod.Status.Phase == v1.PodRunning {
+				notReadyMessage = "WordPress pod is running but containers are not ready"
 				// Pod is running, check if it's ready
 				podReady := false
 				for _, condition := range pod.Status.Conditions {
@@ -429,6 +432,7 @@ func (r *WordPressSiteReconciler) updateStatus(ctx context.Context, wp *crmv1.Wo
 		}
 	} else {
 		logger.Error(err, "Failed to list WordPress pods")
+		notReadyMessage = "Failed to list WordPress pods"
 	}
 
 	// Check if WordPress is installed & db is ready
@@ -437,10 +441,13 @@ func (r *WordPressSiteReconciler) updateStatus(ctx context.Context, wp *crmv1.Wo
 		installed, err := r.isWordPressInstalled(ctx, wp)
 		if err != nil {
 			logger.Error(err, "updateStatus: Failed to check if WordPressSite is installed")
+			notReadyMessage = "Failed to check WordPress installation status"
 		} else if installed {
 			// Emit event for installation detected
 			r.Recorder.Event(wp, v1.EventTypeNormal, "InstallationDetected", "WordPress installation detected")
 			status = StatusWordPressReady
+		} else {
+			notReadyMessage = "WordPress installation not detected"
 		}
 	}
 
@@ -454,9 +461,12 @@ func (r *WordPressSiteReconciler) updateStatus(ctx context.Context, wp *crmv1.Wo
 			ingressReady, err := r.isIngressReady(ctx, wp)
 			if err != nil {
 				logger.Error(err, "Failed to check if Ingress is ready")
+				notReadyMessage = "Failed to check WordPress ingress"
 			} else if ingressReady {
 				r.Recorder.Event(wp, v1.EventTypeNormal, "IngressReady", "Detected Ingress is ready for WordPress site")
 				status = StatusWordPressReadyAndDeployed
+			} else {
+				notReadyMessage = "WordPress ingress is not ready"
 			}
 		}
 	}
@@ -473,7 +483,7 @@ func (r *WordPressSiteReconciler) updateStatus(ctx context.Context, wp *crmv1.Wo
 	if status == StatusWordPressReadyAndDeployed {
 		wordpress.SetCondition(wp, "Ready", metav1.ConditionTrue, "Ready", "WordPress site is ready")
 	} else {
-		wordpress.SetCondition(wp, "Ready", metav1.ConditionFalse, "NotReady", "WordPress pod not found")
+		wordpress.SetCondition(wp, "Ready", metav1.ConditionFalse, "NotReady", notReadyMessage)
 	}
 
 	// Set the Ready status field - this directly updates the status.ready field in the CRD
@@ -503,6 +513,27 @@ func (r *WordPressSiteReconciler) isIngressReady(ctx context.Context, wp *crmv1.
 		addr := ingress.Status.LoadBalancer.Ingress[0]
 		return addr.IP != "" || addr.Hostname != "", nil
 	}
+
+	// Some ingress controllers, including Traefik in pn-k8s, do not populate
+	// ingress.status.loadBalancer for cluster-internal ingress classes. If the
+	// reconciled Ingress exists and points at the expected host/backend, treat
+	// it as deployed rather than keeping an externally reachable site NotReady.
+	if wp.Spec.Ingress == nil || wp.Spec.Ingress.Host == "" {
+		return true, nil
+	}
+
+	serviceName := wordpress.GetResourceName(wp.Name)
+	for _, rule := range ingress.Spec.Rules {
+		if rule.Host != wp.Spec.Ingress.Host || rule.HTTP == nil {
+			continue
+		}
+		for _, path := range rule.HTTP.Paths {
+			if path.Backend.Service != nil && path.Backend.Service.Name == serviceName {
+				return true, nil
+			}
+		}
+	}
+
 	return false, nil
 }
 
