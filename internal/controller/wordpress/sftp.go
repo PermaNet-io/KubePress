@@ -173,7 +173,7 @@ func ReconcileSFTPDeployment(ctx context.Context, r client.Client, scheme *runti
 						Containers: []corev1.Container{
 							{
 								Name:         "sftp",
-								Image:        "atmoz/sftp:latest",
+								Image:        getEnv("SFTP_IMAGE", "atmoz/sftp:latest"),
 								Env:          env,
 								VolumeMounts: volumeMounts,
 								Ports: []corev1.ContainerPort{
@@ -243,7 +243,7 @@ func ReconcileSFTPDeployment(ctx context.Context, r client.Client, scheme *runti
 				Annotations: annotations,
 			},
 			Spec: corev1.ServiceSpec{
-				Type:     corev1.ServiceTypeLoadBalancer,
+				Type:     getSFTPServiceType(),
 				Selector: GetSFTPLabels(wp),
 				Ports: []corev1.ServicePort{{
 					Name:       "sftp",
@@ -270,6 +270,24 @@ func ReconcileSFTPDeployment(ctx context.Context, r client.Client, scheme *runti
 	}
 
 	return nil
+}
+
+func getEnv(name string, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func getSFTPServiceType() corev1.ServiceType {
+	switch os.Getenv("SFTP_SERVICE_TYPE") {
+	case string(corev1.ServiceTypeLoadBalancer):
+		return corev1.ServiceTypeLoadBalancer
+	case string(corev1.ServiceTypeNodePort):
+		return corev1.ServiceTypeNodePort
+	default:
+		return corev1.ServiceTypeClusterIP
+	}
 }
 
 func getAvailablePort(ctx context.Context, r client.Client, logger logr.Logger) (int, error) {
