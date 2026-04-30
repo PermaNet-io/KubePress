@@ -42,7 +42,10 @@ func TestReconcileDeploymentUpdatesBuiltInEnvVars(t *testing.T) {
 				Image:    "wordpress:new",
 				Replicas: 1,
 				Resources: &crmv1.ResourceRequirements{
-					MemoryLimit: "2Gi",
+					CPULimit:      "1000m",
+					CPURequest:    "250m",
+					MemoryLimit:   "2Gi",
+					MemoryRequest: "512Mi",
 				},
 			},
 		},
@@ -91,13 +94,16 @@ func TestReconcileDeploymentUpdatesBuiltInEnvVars(t *testing.T) {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
-	initEnv := got.Spec.Template.Spec.InitContainers[0].Env
-	assertEnvValue(t, initEnv, "WORDPRESS_URL", "https://new.example.com")
-	assertEnvValue(t, initEnv, "WORDPRESS_TITLE", "New title")
-	assertEnvValue(t, initEnv, "WORDPRESS_ADMIN_EMAIL", "new-admin@example.com")
-	assertEnvValue(t, initEnv, "WORDPRESS_MEMORY_LIMIT", "2048M")
-	assertSecretRef(t, initEnv, "WORDPRESS_ADMIN_USER", "new-secret", "username")
-	assertSecretRef(t, initEnv, "WORDPRESS_ADMIN_PASSWORD", "new-secret", "password")
+	initContainer := got.Spec.Template.Spec.InitContainers[0]
+	if initContainer.Image != "wordpress:new" {
+		t.Fatalf("init image = %q, want wordpress:new", initContainer.Image)
+	}
+	assertEnvValue(t, initContainer.Env, "WORDPRESS_URL", "https://new.example.com")
+	assertEnvValue(t, initContainer.Env, "WORDPRESS_TITLE", "New title")
+	assertEnvValue(t, initContainer.Env, "WORDPRESS_ADMIN_EMAIL", "new-admin@example.com")
+	assertEnvValue(t, initContainer.Env, "WORDPRESS_MEMORY_LIMIT", "2048M")
+	assertSecretRef(t, initContainer.Env, "WORDPRESS_ADMIN_USER", "new-secret", "username")
+	assertSecretRef(t, initContainer.Env, "WORDPRESS_ADMIN_PASSWORD", "new-secret", "password")
 
 	containerEnv := got.Spec.Template.Spec.Containers[0].Env
 	assertSecretRef(t, containerEnv, "WORDPRESS_DB_HOST", "new-secret", "databaseHost")
