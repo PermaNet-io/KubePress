@@ -78,6 +78,10 @@ type WordPressConfig struct {
 	// Resource requirements for the WordPress pod
 	// +optional
 	Resources *ResourceRequirements `json:"resources,omitempty"`
+
+	// ImagePullSecret references an optional pull secret for private WordPress images
+	// +optional
+	ImagePullSecret string `json:"imagePullSecret,omitempty"`
 }
 
 // EnvVar represents an environment variable in a container
