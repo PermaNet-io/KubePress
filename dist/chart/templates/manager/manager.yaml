@@ -27,6 +27,9 @@ spec:
                 app.kubernetes.io/managed-by: {{ .Release.Service }}
                 app.kubernetes.io/version: {{ .Chart.Version | replace "+" "_" }}
         spec:
+            {{- with .Values.manager.imagePullSecrets }}
+            imagePullSecrets: {{ toYaml . | nindent 16 }}
+            {{- end }}
             {{- with .Values.manager.tolerations }}
             tolerations: {{ toYaml . | nindent 16 }}
             {{- end }}
