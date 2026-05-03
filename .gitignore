@@ -35,3 +35,6 @@ go.work
 sites/
 /TODO
 test
+
+# system files
+.DS_Store
