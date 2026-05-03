@@ -61,6 +61,11 @@ const (
 )
 
 const (
+	ingressReadyWithoutLoadBalancerAnnotation = "kubepress.hostzero.de/ingress-ready-without-load-balancer"
+	legacyIngressClassAnnotation              = "kubernetes.io/ingress.class"
+)
+
+const (
 	StatusUnknown                   = "Unknown"                   // Initial status, not set yet
 	StatusValidationFailed          = "ValidationFailed"          // Validation failed, e.g. the domain is already in use
 	StatusContainerReady            = "ContainerReady"            // Container is ready, first status to set
@@ -514,12 +519,37 @@ func (r *WordPressSiteReconciler) isIngressReady(ctx context.Context, wp *crmv1.
 		return addr.IP != "" || addr.Hostname != "", nil
 	}
 
-	// Some ingress controllers, including Traefik in pn-k8s, do not populate
-	// ingress.status.loadBalancer for cluster-internal ingress classes. If the
-	// reconciled Ingress exists and points at the expected host/backend, treat
-	// it as deployed rather than keeping an externally reachable site NotReady.
-	if wp.Spec.Ingress == nil || wp.Spec.Ingress.Host == "" {
+	if ingressAllowsReadyWithoutLoadBalancer(ingress) && ingressRoutesToWordPressService(ingress, wp) {
 		return true, nil
+	}
+
+	return false, nil
+}
+
+func ingressAllowsReadyWithoutLoadBalancer(ingress *networkingv1.Ingress) bool {
+	if strings.EqualFold(ingress.Annotations[ingressReadyWithoutLoadBalancerAnnotation], "true") {
+		return true
+	}
+
+	ingressClassName := ""
+	if ingress.Spec.IngressClassName != nil {
+		ingressClassName = *ingress.Spec.IngressClassName
+	}
+	if ingressClassName == "" {
+		ingressClassName = ingress.Annotations[legacyIngressClassAnnotation]
+	}
+
+	switch strings.ToLower(ingressClassName) {
+	case "cloudflare-tunnel", "cloudflared", "cloudflare-warp":
+		return true
+	default:
+		return false
+	}
+}
+
+func ingressRoutesToWordPressService(ingress *networkingv1.Ingress, wp *crmv1.WordPressSite) bool {
+	if wp.Spec.Ingress == nil || wp.Spec.Ingress.Host == "" {
+		return false
 	}
 
 	serviceName := wordpress.GetResourceName(wp.Name)
@@ -528,13 +558,29 @@ func (r *WordPressSiteReconciler) isIngressReady(ctx context.Context, wp *crmv1.
 			continue
 		}
 		for _, path := range rule.HTTP.Paths {
-			if path.Backend.Service != nil && path.Backend.Service.Name == serviceName {
-				return true, nil
+			if !isExpectedWordPressPath(path) {
+				continue
+			}
+			if path.Backend.Service != nil &&
+				path.Backend.Service.Name == serviceName &&
+				isExpectedWordPressServicePort(path.Backend.Service.Port) {
+				return true
 			}
 		}
 	}
 
-	return false, nil
+	return false
+}
+
+func isExpectedWordPressPath(path networkingv1.HTTPIngressPath) bool {
+	if path.Path != "/" {
+		return false
+	}
+	return path.PathType == nil || *path.PathType == networkingv1.PathTypePrefix
+}
+
+func isExpectedWordPressServicePort(port networkingv1.ServiceBackendPort) bool {
+	return port.Number == 80 || port.Name == "http"
 }
 
 // getMySQLVersionDirect queries the MySQL version directly

@@ -12,8 +12,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestIsIngressReadyAcceptsMatchingIngressWithoutLoadBalancerStatus(t *testing.T) {
-	reconciler := newTestReconciler(t, newIngress("site", "default", "site.example.com", "site"))
+func TestIsIngressReadyAcceptsExplicitTunnelIngressWithoutLoadBalancerStatus(t *testing.T) {
+	reconciler := newTestReconciler(t, newIngress("site", "default", "site.example.com", "site", map[string]string{
+		ingressReadyWithoutLoadBalancerAnnotation: "true",
+	}, ""))
 	wp := newWordPressSite("site.example.com")
 
 	ready, err := reconciler.isIngressReady(context.Background(), wp)
@@ -21,12 +23,40 @@ func TestIsIngressReadyAcceptsMatchingIngressWithoutLoadBalancerStatus(t *testin
 		t.Fatalf("isIngressReady returned error: %v", err)
 	}
 	if !ready {
-		t.Fatal("isIngressReady returned false for matching ingress without load balancer status")
+		t.Fatal("isIngressReady returned false for explicit tunnel ingress without load balancer status")
+	}
+}
+
+func TestIsIngressReadyAcceptsCloudflareTunnelIngressClassWithoutLoadBalancerStatus(t *testing.T) {
+	reconciler := newTestReconciler(t, newIngress("site", "default", "site.example.com", "site", nil, "cloudflare-tunnel"))
+	wp := newWordPressSite("site.example.com")
+
+	ready, err := reconciler.isIngressReady(context.Background(), wp)
+	if err != nil {
+		t.Fatalf("isIngressReady returned error: %v", err)
+	}
+	if !ready {
+		t.Fatal("isIngressReady returned false for Cloudflare Tunnel ingress class without load balancer status")
+	}
+}
+
+func TestIsIngressReadyRejectsMatchingIngressWithoutLoadBalancerSignal(t *testing.T) {
+	reconciler := newTestReconciler(t, newIngress("site", "default", "site.example.com", "site", nil, ""))
+	wp := newWordPressSite("site.example.com")
+
+	ready, err := reconciler.isIngressReady(context.Background(), wp)
+	if err != nil {
+		t.Fatalf("isIngressReady returned error: %v", err)
+	}
+	if ready {
+		t.Fatal("isIngressReady returned true for matching ingress without load balancer or tunnel signal")
 	}
 }
 
 func TestIsIngressReadyRejectsStaleIngressHost(t *testing.T) {
-	reconciler := newTestReconciler(t, newIngress("site", "default", "old.example.com", "site"))
+	reconciler := newTestReconciler(t, newIngress("site", "default", "old.example.com", "site", map[string]string{
+		ingressReadyWithoutLoadBalancerAnnotation: "true",
+	}, ""))
 	wp := newWordPressSite("site.example.com")
 
 	ready, err := reconciler.isIngressReady(context.Background(), wp)
@@ -72,12 +102,13 @@ func newWordPressSite(host string) *crmv1.WordPressSite {
 	}
 }
 
-func newIngress(name, namespace, host, serviceName string) *networkingv1.Ingress {
+func newIngress(name, namespace, host, serviceName string, annotations map[string]string, ingressClassName string) *networkingv1.Ingress {
 	pathType := networkingv1.PathTypePrefix
-	return &networkingv1.Ingress{
+	ingress := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+			Name:        name,
+			Namespace:   namespace,
+			Annotations: annotations,
 		},
 		Spec: networkingv1.IngressSpec{
 			Rules: []networkingv1.IngressRule{
@@ -103,4 +134,8 @@ func newIngress(name, namespace, host, serviceName string) *networkingv1.Ingress
 			},
 		},
 	}
+	if ingressClassName != "" {
+		ingress.Spec.IngressClassName = &ingressClassName
+	}
+	return ingress
 }

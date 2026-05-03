@@ -3,7 +3,6 @@ package wordpress
 import (
 	"context"
 	"fmt"
-	"github.com/go-logr/logr"
 	crmv1 "hostzero.de/m/v2/api/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -319,11 +318,11 @@ chown -R 33:33 /var/www/html
 
 		// Add environment variables handling
 		if len(wp.Spec.WordPress.Env) > 0 {
-			if envVarsChanged := updateEnvVars(&deployment.Spec.Template.Spec.Containers[0].Env, wp.Spec.WordPress.Env, logger); envVarsChanged {
+			if envVarsChanged := updateEnvVars(&deployment.Spec.Template.Spec.Containers[0].Env, wp.Spec.WordPress.Env); envVarsChanged {
 				updateNeeded = true
 			}
 			if len(deployment.Spec.Template.Spec.InitContainers) > 0 {
-				if envVarsChanged := updateEnvVars(&deployment.Spec.Template.Spec.InitContainers[0].Env, wp.Spec.WordPress.Env, logger); envVarsChanged {
+				if envVarsChanged := updateEnvVars(&deployment.Spec.Template.Spec.InitContainers[0].Env, wp.Spec.WordPress.Env); envVarsChanged {
 					updateNeeded = true
 				}
 			}
@@ -424,6 +423,9 @@ func buildWordPressResources(wp *crmv1.WordPressSite) corev1.ResourceRequirement
 	if wp.Spec.WordPress.Resources.CPURequest != "" {
 		resources.Requests[corev1.ResourceCPU] = resource.MustParse(wp.Spec.WordPress.Resources.CPURequest)
 	}
+	if wp.Spec.WordPress.Resources.CPULimit != "" {
+		resources.Limits[corev1.ResourceCPU] = resource.MustParse(wp.Spec.WordPress.Resources.CPULimit)
+	}
 	if wp.Spec.WordPress.Resources.MemoryRequest != "" {
 		resources.Requests[corev1.ResourceMemory] = resource.MustParse(wp.Spec.WordPress.Resources.MemoryRequest)
 	}
@@ -477,8 +479,8 @@ func resourcesEqual(requirements corev1.ResourceRequirements, actual corev1.Reso
 
 }
 
-// updateEnvVars updates environment variables in a container.
-func updateEnvVars(containerEnv *[]corev1.EnvVar, envVars []crmv1.EnvVar, logger logr.Logger) bool {
+// updateEnvVars updates custom environment variables in a container.
+func updateEnvVars(containerEnv *[]corev1.EnvVar, envVars []crmv1.EnvVar) bool {
 	changed := false
 	existingEnvVars := make(map[string]int)
 	for i, env := range *containerEnv {
@@ -486,6 +488,10 @@ func updateEnvVars(containerEnv *[]corev1.EnvVar, envVars []crmv1.EnvVar, logger
 	}
 
 	for _, env := range envVars {
+		if isManagedEnvVar(env.Name) {
+			continue
+		}
+
 		if existingIndex, ok := existingEnvVars[env.Name]; ok {
 			if (*containerEnv)[existingIndex].Value != env.Value {
 				(*containerEnv)[existingIndex].Value = env.Value
@@ -505,6 +511,27 @@ func updateEnvVars(containerEnv *[]corev1.EnvVar, envVars []crmv1.EnvVar, logger
 	}
 
 	return changed
+}
+
+func isManagedEnvVar(name string) bool {
+	switch name {
+	case "WORDPRESS_DB_HOST",
+		"WORDPRESS_DB_NAME",
+		"WORDPRESS_DB_USER",
+		"WORDPRESS_DB_PASSWORD",
+		"WORDPRESS_TABLE_PREFIX",
+		"APACHE_RUN_USER",
+		"APACHE_RUN_GROUP",
+		"WORDPRESS_URL",
+		"WORDPRESS_TITLE",
+		"WORDPRESS_ADMIN_USER",
+		"WORDPRESS_ADMIN_PASSWORD",
+		"WORDPRESS_ADMIN_EMAIL",
+		"WORDPRESS_MEMORY_LIMIT":
+		return true
+	default:
+		return false
+	}
 }
 
 func upsertEnvVar(containerEnv *[]corev1.EnvVar, desired corev1.EnvVar) bool {

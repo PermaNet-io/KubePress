@@ -42,7 +42,10 @@ func TestReconcileDeploymentUpdatesBuiltInEnvVars(t *testing.T) {
 				Image:    "wordpress:new",
 				Replicas: 1,
 				Resources: &crmv1.ResourceRequirements{
-					MemoryLimit: "2Gi",
+					CPULimit:      "1000m",
+					CPURequest:    "250m",
+					MemoryLimit:   "2Gi",
+					MemoryRequest: "512Mi",
 				},
 			},
 		},
@@ -91,19 +94,39 @@ func TestReconcileDeploymentUpdatesBuiltInEnvVars(t *testing.T) {
 		t.Fatalf("failed to get deployment: %v", err)
 	}
 
-	initEnv := got.Spec.Template.Spec.InitContainers[0].Env
-	assertEnvValue(t, initEnv, "WORDPRESS_URL", "https://new.example.com")
-	assertEnvValue(t, initEnv, "WORDPRESS_TITLE", "New title")
-	assertEnvValue(t, initEnv, "WORDPRESS_ADMIN_EMAIL", "new-admin@example.com")
-	assertEnvValue(t, initEnv, "WORDPRESS_MEMORY_LIMIT", "2048M")
-	assertSecretRef(t, initEnv, "WORDPRESS_ADMIN_USER", "new-secret", "username")
-	assertSecretRef(t, initEnv, "WORDPRESS_ADMIN_PASSWORD", "new-secret", "password")
+	initContainer := got.Spec.Template.Spec.InitContainers[0]
+	if initContainer.Image != "wordpress:new" {
+		t.Fatalf("init image = %q, want wordpress:new", initContainer.Image)
+	}
+	assertEnvValue(t, initContainer.Env, "WORDPRESS_URL", "https://new.example.com")
+	assertEnvValue(t, initContainer.Env, "WORDPRESS_TITLE", "New title")
+	assertEnvValue(t, initContainer.Env, "WORDPRESS_ADMIN_EMAIL", "new-admin@example.com")
+	assertEnvValue(t, initContainer.Env, "WORDPRESS_MEMORY_LIMIT", "2048M")
+	assertSecretRef(t, initContainer.Env, "WORDPRESS_ADMIN_USER", "new-secret", "username")
+	assertSecretRef(t, initContainer.Env, "WORDPRESS_ADMIN_PASSWORD", "new-secret", "password")
 
 	containerEnv := got.Spec.Template.Spec.Containers[0].Env
 	assertSecretRef(t, containerEnv, "WORDPRESS_DB_HOST", "new-secret", "databaseHost")
 	assertSecretRef(t, containerEnv, "WORDPRESS_DB_NAME", "new-secret", "database")
 	assertSecretRef(t, containerEnv, "WORDPRESS_DB_USER", "new-secret", "databaseUsername")
 	assertSecretRef(t, containerEnv, "WORDPRESS_DB_PASSWORD", "new-secret", "databasePassword")
+}
+
+func TestUpdateEnvVarsSkipsManagedEnvVars(t *testing.T) {
+	env := []corev1.EnvVar{
+		{Name: "WORDPRESS_DB_HOST", ValueFrom: secretKeyEnv("db-secret", "databaseHost")},
+	}
+
+	changed := updateEnvVars(&env, []crmv1.EnvVar{
+		{Name: "WORDPRESS_DB_HOST", Value: "override.example.com"},
+		{Name: "CUSTOM_SETTING", Value: "enabled"},
+	})
+
+	if !changed {
+		t.Fatal("updateEnvVars did not report adding custom env var")
+	}
+	assertSecretRef(t, env, "WORDPRESS_DB_HOST", "db-secret", "databaseHost")
+	assertEnvValue(t, env, "CUSTOM_SETTING", "enabled")
 }
 
 func assertEnvValue(t *testing.T, env []corev1.EnvVar, name, expected string) {
