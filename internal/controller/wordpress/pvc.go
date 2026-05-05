@@ -21,7 +21,7 @@ import (
 func ReconcilePVC(ctx context.Context, r client.Client, scheme *runtime.Scheme, wp *crmv1.WordPressSite) error {
 	logger := log.FromContext(ctx).WithValues("component", "ingress")
 
-	pvcName := GetPVCName(wp.Name)
+	pvcName := GetStoragePVCName(wp)
 
 	// Check if central PVC exists
 	pvc := &corev1.PersistentVolumeClaim{}

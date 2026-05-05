@@ -52,40 +52,8 @@ func ReconcileDeployment(ctx context.Context, r client.Client, scheme *runtime.S
 			"app.kubernetes.io/name": "wordpress-server",
 		})
 
-		// Configure volume mounts with subpath
-		volumeMounts := []corev1.VolumeMount{
-			{
-				Name:      DefaultVolumeName,
-				MountPath: "/var/www/html",
-			},
-			{
-				Name:      "php-config",
-				MountPath: "/usr/local/etc/php/conf.d/custom.ini",
-				SubPath:   "php.ini",
-			},
-		}
-
-		// Configure volumes to use central PVC
-		volumes := []corev1.Volume{
-			{
-				Name: DefaultVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-						ClaimName: GetPVCName(wp.Name),
-					},
-				},
-			},
-			{
-				Name: "php-config",
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: GetConfigMapName(wp.Name),
-						},
-					},
-				},
-			},
-		}
+		volumeMounts := desiredWordPressVolumeMounts(wp)
+		volumes := desiredWordPressVolumes(wp)
 
 		// convert memory limit from Go format to PHP format
 		memoryLimit, err := GoMemoryToPHPMemory(wp.Spec.WordPress.Resources.MemoryLimit)
@@ -192,6 +160,7 @@ chown -R 33:33 /var/www/html
 `},
 			VolumeMounts: volumeMounts, // share volumes with main container if needed
 			Env:          desiredInitEnvVars(wp, mySQLSecretName, memoryLimit),
+			EnvFrom:      wp.Spec.WordPress.EnvFrom,
 		}
 		initContainer.Env = append(initContainer.Env, toCoreEnvVars(wp.Spec.WordPress.Env)...)
 
@@ -253,6 +222,7 @@ chown -R 33:33 /var/www/html
 					},
 					VolumeMounts: volumeMounts,
 					Resources:    buildWordPressResources(wp),
+					EnvFrom:      wp.Spec.WordPress.EnvFrom,
 				},
 			},
 			Volumes: volumes,
@@ -369,6 +339,31 @@ chown -R 33:33 /var/www/html
 			}
 		}
 
+		desiredVolumeMounts := desiredWordPressVolumeMounts(wp)
+		if !reflect.DeepEqual(deployment.Spec.Template.Spec.Containers[0].VolumeMounts, desiredVolumeMounts) {
+			deployment.Spec.Template.Spec.Containers[0].VolumeMounts = desiredVolumeMounts
+			updateNeeded = true
+		}
+		if len(deployment.Spec.Template.Spec.InitContainers) > 0 && !reflect.DeepEqual(deployment.Spec.Template.Spec.InitContainers[0].VolumeMounts, desiredVolumeMounts) {
+			deployment.Spec.Template.Spec.InitContainers[0].VolumeMounts = desiredVolumeMounts
+			updateNeeded = true
+		}
+
+		desiredVolumes := desiredWordPressVolumes(wp)
+		if !reflect.DeepEqual(deployment.Spec.Template.Spec.Volumes, desiredVolumes) {
+			deployment.Spec.Template.Spec.Volumes = desiredVolumes
+			updateNeeded = true
+		}
+
+		if !reflect.DeepEqual(deployment.Spec.Template.Spec.Containers[0].EnvFrom, wp.Spec.WordPress.EnvFrom) {
+			deployment.Spec.Template.Spec.Containers[0].EnvFrom = wp.Spec.WordPress.EnvFrom
+			updateNeeded = true
+		}
+		if len(deployment.Spec.Template.Spec.InitContainers) > 0 && !reflect.DeepEqual(deployment.Spec.Template.Spec.InitContainers[0].EnvFrom, wp.Spec.WordPress.EnvFrom) {
+			deployment.Spec.Template.Spec.InitContainers[0].EnvFrom = wp.Spec.WordPress.EnvFrom
+			updateNeeded = true
+		}
+
 		// Update the deployment if needed
 		if updateNeeded {
 			logger.Info("Updating WordPress deployment")
@@ -380,6 +375,54 @@ chown -R 33:33 /var/www/html
 	}
 
 	return nil
+}
+
+func desiredWordPressVolumeMounts(wp *crmv1.WordPressSite) []corev1.VolumeMount {
+	volumeMounts := []corev1.VolumeMount{}
+	if len(wp.Spec.WordPress.StorageMounts) == 0 {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      DefaultVolumeName,
+			MountPath: "/var/www/html",
+		})
+	} else {
+		for _, mount := range wp.Spec.WordPress.StorageMounts {
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      DefaultVolumeName,
+				MountPath: mount.MountPath,
+				SubPath:   mount.SubPath,
+				ReadOnly:  mount.ReadOnly,
+			})
+		}
+	}
+
+	return append(volumeMounts, corev1.VolumeMount{
+		Name:      "php-config",
+		MountPath: "/usr/local/etc/php/conf.d/custom.ini",
+		SubPath:   "php.ini",
+	})
+}
+
+func desiredWordPressVolumes(wp *crmv1.WordPressSite) []corev1.Volume {
+	return []corev1.Volume{
+		{
+			Name: DefaultVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: GetStoragePVCName(wp),
+				},
+			},
+		},
+		{
+			Name: "php-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: GetConfigMapName(wp.Name),
+					},
+				},
+			},
+		},
+	}
 }
 
 func desiredWordPressContainerEnvVars(secretName string) []corev1.EnvVar {

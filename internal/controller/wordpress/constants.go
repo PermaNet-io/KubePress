@@ -1,5 +1,7 @@
 package wordpress
 
+import crmv1 "hostzero.de/m/v2/api/v1"
+
 // GetResourceName returns the prefixed resource name
 func GetResourceName(wpName string) string {
 	return wpName
@@ -16,6 +18,13 @@ func GetConfigMapName(wpName string) string {
 
 func GetPVCName(wpName string) string {
 	return wpName
+}
+
+func GetStoragePVCName(wp *crmv1.WordPressSite) string {
+	if wp.Spec.WordPress.StorageClaimName != "" {
+		return wp.Spec.WordPress.StorageClaimName
+	}
+	return GetPVCName(wp.Name)
 }
 
 func GetSFTPServiceName(wpName string) string {

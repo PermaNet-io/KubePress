@@ -1,6 +1,7 @@
 package v1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -57,6 +58,10 @@ type WordPressConfig struct {
 	// +kubebuilder:default="1Gi"
 	StorageSize string `json:"storageSize,omitempty"`
 
+	// StorageClaimName overrides the managed WordPress persistent volume claim name
+	// +optional
+	StorageClaimName string `json:"storageClaimName,omitempty"`
+
 	// PHP configuration overrides
 	// +optional
 	PHPConfig map[string]string `json:"phpConfig,omitempty"`
@@ -69,6 +74,16 @@ type WordPressConfig struct {
 	// Environment variables to pass to the WordPress container
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
+
+	// EnvFrom sources to pass to the WordPress container
+	// +optional
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
+
+	// StorageMounts overrides the default WordPress PVC mount.
+	// When empty, the managed PVC is mounted at /var/www/html for legacy behavior.
+	// When set, the managed PVC is mounted only at these paths.
+	// +optional
+	StorageMounts []WordPressStorageMount `json:"storageMounts,omitempty"`
 
 	// Replicas is the number of WordPress instances to run
 	// +kubebuilder:default=1
@@ -91,6 +106,21 @@ type EnvVar struct {
 
 	// Value of the environment variable
 	Value string `json:"value"`
+}
+
+// WordPressStorageMount maps the managed WordPress PVC to a container path.
+type WordPressStorageMount struct {
+	// MountPath is the path inside the WordPress container
+	// +kubebuilder:validation:Required
+	MountPath string `json:"mountPath"`
+
+	// SubPath is the optional path inside the managed WordPress PVC
+	// +optional
+	SubPath string `json:"subPath,omitempty"`
+
+	// ReadOnly controls whether the mount is read-only
+	// +optional
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // ResourceRequirements defines CPU/Memory limits and requests
