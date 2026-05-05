@@ -6,7 +6,7 @@ metadata:
         {{- if .Values.crd.keep }}
         "helm.sh/resource-policy": keep
         {{- end }}
-        controller-gen.kubebuilder.io/version: v0.16.1
+        controller-gen.kubebuilder.io/version: v0.19.0
     name: wordpresssites.crm.hostzero.de
 spec:
     group: crm.hostzero.de
@@ -146,6 +146,50 @@ spec:
                                                 - value
                                             type: object
                                         type: array
+                                    envFrom:
+                                        description: EnvFrom sources to pass to the WordPress container
+                                        items:
+                                            description: EnvFromSource represents the source of a set of ConfigMaps or Secrets
+                                            properties:
+                                                configMapRef:
+                                                    description: The ConfigMap to select from
+                                                    properties:
+                                                        name:
+                                                            default: ""
+                                                            description: |-
+                                                                Name of the referent.
+                                                                This field is effectively required, but due to backwards compatibility is
+                                                                allowed to be empty. Instances of this type with an empty value here are
+                                                                almost certainly wrong.
+                                                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                                            type: string
+                                                        optional:
+                                                            description: Specify whether the ConfigMap must be defined
+                                                            type: boolean
+                                                    type: object
+                                                    x-kubernetes-map-type: atomic
+                                                prefix:
+                                                    description: Optional text to prepend to the name of each environment variable. Must be a C_IDENTIFIER.
+                                                    type: string
+                                                secretRef:
+                                                    description: The Secret to select from
+                                                    properties:
+                                                        name:
+                                                            default: ""
+                                                            description: |-
+                                                                Name of the referent.
+                                                                This field is effectively required, but due to backwards compatibility is
+                                                                allowed to be empty. Instances of this type with an empty value here are
+                                                                almost certainly wrong.
+                                                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                                            type: string
+                                                        optional:
+                                                            description: Specify whether the Secret must be defined
+                                                            type: boolean
+                                                    type: object
+                                                    x-kubernetes-map-type: atomic
+                                            type: object
+                                        type: array
                                     image:
                                         default: wordpress:latest
                                         description: Image to use for the WordPress container
@@ -184,6 +228,30 @@ spec:
                                                 description: Memory request
                                                 type: string
                                         type: object
+                                    storageClaimName:
+                                        description: StorageClaimName overrides the managed WordPress persistent volume claim name
+                                        type: string
+                                    storageMounts:
+                                        description: |-
+                                            StorageMounts overrides the default WordPress PVC mount.
+                                            When empty, the managed PVC is mounted at /var/www/html for legacy behavior.
+                                            When set, the managed PVC is mounted only at these paths.
+                                        items:
+                                            description: WordPressStorageMount maps the managed WordPress PVC to a container path.
+                                            properties:
+                                                mountPath:
+                                                    description: MountPath is the path inside the WordPress container
+                                                    type: string
+                                                readOnly:
+                                                    description: ReadOnly controls whether the mount is read-only
+                                                    type: boolean
+                                                subPath:
+                                                    description: SubPath is the optional path inside the managed WordPress PVC
+                                                    type: string
+                                            required:
+                                                - mountPath
+                                            type: object
+                                        type: array
                                     storageSize:
                                         default: 1Gi
                                         description: StorageSize for WordPress persistent volume

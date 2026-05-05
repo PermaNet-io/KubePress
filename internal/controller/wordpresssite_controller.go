@@ -185,7 +185,7 @@ func (r *WordPressSiteReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// check if the pvc is now smaller than before
-	pvcName := wordpress.GetPVCName(wp.Name)
+	pvcName := wordpress.GetStoragePVCName(wp)
 
 	// Check if central PVC exists
 	pvc := &v1.PersistentVolumeClaim{}
