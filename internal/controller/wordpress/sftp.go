@@ -85,7 +85,7 @@ func ReconcileSFTPDeployment(ctx context.Context, r client.Client, scheme *runti
 				Name: DefaultVolumeName,
 				VolumeSource: corev1.VolumeSource{
 					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-						ClaimName: GetPVCName(wp.Name),
+						ClaimName: GetStoragePVCName(wp),
 					},
 				},
 			},
